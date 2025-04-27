@@ -1,5 +1,5 @@
 /*
- * Segregated Free List + Best Fit malloc
+ * Segregated Free List + Next Fit malloc
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +38,7 @@ team_t team = {
 
 static void *segregated_free_lists[LISTLIMIT];
 static char *heap_listp;
+static void *last_bp;  // Next Fit용 마지막 탐색 위치
 
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
@@ -47,6 +48,7 @@ static int find_list_index(size_t size);
 static void add_free_block(void *bp);
 static void splice_free_block(void *bp);
 
+/* 초기화 함수 */
 int mm_init(void) {
     for (int i = 0; i < LISTLIMIT; i++)
         segregated_free_lists[i] = NULL;
@@ -60,12 +62,15 @@ int mm_init(void) {
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
     heap_listp += (2 * WSIZE);
 
+    last_bp = NULL;  // next-fit 포인터 초기화
+
     if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
 
     return 0;
 }
 
+/* 크기에 따라 리스트 인덱스 찾기 */
 static int find_list_index(size_t size) {
     int idx = 0;
     size_t temp = size;
@@ -77,6 +82,7 @@ static int find_list_index(size_t size) {
     return idx;
 }
 
+/* 가용 블록 추가 */
 static void add_free_block(void *bp) {
     int idx = find_list_index(GET_SIZE(HDRP(bp)));
     void *head = segregated_free_lists[idx];
@@ -88,6 +94,7 @@ static void add_free_block(void *bp) {
     segregated_free_lists[idx] = bp;
 }
 
+/* 가용 블록 제거 */
 static void splice_free_block(void *bp) {
     int idx = find_list_index(GET_SIZE(HDRP(bp)));
 
@@ -100,6 +107,7 @@ static void splice_free_block(void *bp) {
         GET_PRED(GET_SUCC(bp)) = GET_PRED(bp);
 }
 
+/* 힙 확장 */
 static void *extend_heap(size_t words) {
     char *bp;
     size_t size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
@@ -114,6 +122,7 @@ static void *extend_heap(size_t words) {
     return coalesce(bp);
 }
 
+/* 가용 블록 병합 */
 static void *coalesce(void *bp) {
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
@@ -148,21 +157,40 @@ static void *coalesce(void *bp) {
     return bp;
 }
 
+/* Next Fit 방식으로 가용 블록 탐색 */
 static void *find_fit(size_t asize) {
-    int idx = find_list_index(asize);
+    void *start_bp = last_bp;
+    int idx = 0;
 
-    for (int i = idx; i < LISTLIMIT; i++) {
-        void *bp = segregated_free_lists[i];
+    if (start_bp == NULL)
+        start_bp = heap_listp;
 
+    // 처음 위치부터 끝까지
+    for (idx = 0; idx < LISTLIMIT; idx++) {
+        void *bp = segregated_free_lists[idx];
         while (bp != NULL) {
-            if (GET_SIZE(HDRP(bp)) >= asize)
+            if (GET_SIZE(HDRP(bp)) >= asize) {
+                last_bp = bp;
                 return bp;
+            }
+            bp = GET_SUCC(bp);
+        }
+    }
+    // 못 찾으면 다시 처음부터
+    for (idx = 0; idx < LISTLIMIT; idx++) {
+        void *bp = segregated_free_lists[idx];
+        while (bp != NULL) {
+            if (GET_SIZE(HDRP(bp)) >= asize) {
+                last_bp = bp;
+                return bp;
+            }
             bp = GET_SUCC(bp);
         }
     }
     return NULL;
 }
 
+/* 요청 블록 배치 및 분할 */
 static void place(void *bp, size_t asize) {
     splice_free_block(bp);
 
@@ -182,6 +210,7 @@ static void place(void *bp, size_t asize) {
     }
 }
 
+/* malloc 함수 */
 void *mm_malloc(size_t size) {
     size_t asize;
     size_t extendsize;
@@ -207,6 +236,7 @@ void *mm_malloc(size_t size) {
     return bp;
 }
 
+/* free 함수 */
 void mm_free(void *bp) {
     size_t size = GET_SIZE(HDRP(bp));
 
@@ -215,6 +245,7 @@ void mm_free(void *bp) {
     coalesce(bp);
 }
 
+/* realloc 함수 */
 void *mm_realloc(void *ptr, size_t size) {
     if (ptr == NULL) return mm_malloc(size);
     if (size == 0) { mm_free(ptr); return NULL; }
