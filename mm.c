@@ -1,5 +1,5 @@
 /*
- * mm-lifo.c - 명시적 가용 리스트 + Best-Fit + LIFO 삽입
+ * mm-address-order.c - 명시적 가용 리스트 + 주소순서 기반 삽입
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +44,7 @@ static void place(void *bp, size_t asize);
 static void add_free_block(void *bp);
 static void splice_free_block(void *bp);
 
-/* 초기화 */
+/* mm_init - 초기화 */
 int mm_init(void)
 {
     if ((heap_listp = mem_sbrk(8 * WSIZE)) == (void *)-1)
@@ -80,14 +80,31 @@ static void *extend_heap(size_t words)
     return coalesce(bp);
 }
 
-/* add_free_block - LIFO 방식으로 free list 앞에 추가 */
+/* add_free_block - 주소순서로 free list에 삽입 */
 static void add_free_block(void *bp)
 {
-    GET_SUCC(bp) = heap_listp;
-    if (heap_listp != NULL)
-        GET_PRED(heap_listp) = bp;
-    GET_PRED(bp) = NULL;
-    heap_listp = bp;
+    void *current = heap_listp;
+    void *prev = NULL;
+
+    // 주소순으로 삽입할 위치 찾기
+    while (current != NULL && current < bp) {
+        prev = current;
+        current = GET_SUCC(current);
+    }
+
+    if (prev == NULL) { // 맨 앞에 삽입
+        GET_SUCC(bp) = heap_listp;
+        if (heap_listp != NULL)
+            GET_PRED(heap_listp) = bp;
+        GET_PRED(bp) = NULL;
+        heap_listp = bp;
+    } else { // 중간에 삽입
+        GET_SUCC(prev) = bp;
+        GET_PRED(bp) = prev;
+        GET_SUCC(bp) = current;
+        if (current != NULL)
+            GET_PRED(current) = bp;
+    }
 }
 
 /* splice_free_block - free list에서 블록 제거 */
@@ -138,23 +155,15 @@ static void *coalesce(void *bp)
     return bp;
 }
 
-/* find_fit - Best Fit 방식으로 가용 블록 탐색 */
+/* find_fit - 주소순서로 처음 맞는 블록 반환 */
 static void *find_fit(size_t asize)
 {
     void *bp;
-    void *best = NULL;
-    size_t best_size = (size_t)(-1);
-
     for (bp = heap_listp; bp != NULL; bp = GET_SUCC(bp)) {
-        size_t bsize = GET_SIZE(HDRP(bp));
-        if (!GET_ALLOC(HDRP(bp)) && bsize >= asize) {
-            if (bsize < best_size) {
-                best = bp;
-                best_size = bsize;
-            }
-        }
+        if (GET_SIZE(HDRP(bp)) >= asize)
+            return bp;
     }
-    return best;
+    return NULL;
 }
 
 /* place - 블록 배치 및 분할 */
@@ -190,7 +199,7 @@ void *mm_malloc(size_t size)
     if (size <= DSIZE)
         asize = 2 * DSIZE;
     else
-        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
+        asize = DSIZE * ((size + DSIZE + DSIZE - 1) / DSIZE);
 
     if ((bp = find_fit(asize)) != NULL) {
         place(bp, asize);
