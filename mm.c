@@ -1,5 +1,5 @@
 /*
- * Segregated Free List + Next Fit malloc
+ * Segregated Free List + First Fit malloc
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,7 +38,6 @@ team_t team = {
 
 static void *segregated_free_lists[LISTLIMIT];
 static char *heap_listp;
-static void *last_bp;  // Next Fit용 마지막 탐색 위치
 
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
@@ -61,8 +60,6 @@ int mm_init(void) {
     PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
     PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
     heap_listp += (2 * WSIZE);
-
-    last_bp = NULL;  // next-fit 포인터 초기화
 
     if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
@@ -157,33 +154,14 @@ static void *coalesce(void *bp) {
     return bp;
 }
 
-/* Next Fit 방식으로 가용 블록 탐색 */
+/* 퍼스트 핏으로 가용 블록 탐색 */
 static void *find_fit(size_t asize) {
-    void *start_bp = last_bp;
-    int idx = 0;
+    for (int i = 0; i < LISTLIMIT; i++) {
+        void *bp = segregated_free_lists[i];
 
-    if (start_bp == NULL)
-        start_bp = heap_listp;
-
-    // 처음 위치부터 끝까지
-    for (idx = 0; idx < LISTLIMIT; idx++) {
-        void *bp = segregated_free_lists[idx];
         while (bp != NULL) {
-            if (GET_SIZE(HDRP(bp)) >= asize) {
-                last_bp = bp;
+            if (GET_SIZE(HDRP(bp)) >= asize)
                 return bp;
-            }
-            bp = GET_SUCC(bp);
-        }
-    }
-    // 못 찾으면 다시 처음부터
-    for (idx = 0; idx < LISTLIMIT; idx++) {
-        void *bp = segregated_free_lists[idx];
-        while (bp != NULL) {
-            if (GET_SIZE(HDRP(bp)) >= asize) {
-                last_bp = bp;
-                return bp;
-            }
             bp = GET_SUCC(bp);
         }
     }
