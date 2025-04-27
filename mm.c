@@ -1,5 +1,5 @@
 /*
- * Segregated Free List + First Fit malloc
+ * mm-lifo.c - 명시적 가용 리스트 + Best-Fit + LIFO 삽입
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,9 +9,15 @@
 #include "mm.h"
 #include "memlib.h"
 
+/* 팀 정보 */
+team_t team = {
+    "ateam", "Harry Bovik", "bovik@cs.cmu.edu", "", ""
+};
+
+/* 매크로 상수 */
 #define WSIZE 8
 #define DSIZE 16
-#define CHUNKSIZE (1<<12)
+#define CHUNKSIZE (1 << 12)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define PACK(size, alloc) ((size) | (alloc))
@@ -21,93 +27,48 @@
 #define GET_ALLOC(p) (GET(p) & 0x1)
 #define HDRP(bp) ((char *)(bp) - WSIZE)
 #define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
-#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
-#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)))
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE((char *)(bp) - DSIZE))
+
 #define GET_SUCC(bp) (*(void **)((char *)(bp) + WSIZE))
 #define GET_PRED(bp) (*(void **)(bp))
 
-#define LISTLIMIT 20
-
-team_t team = {
-    "ateam",
-    "Harry Bovik",
-    "bovik@cs.cmu.edu",
-    "",
-    ""
-};
-
-static void *segregated_free_lists[LISTLIMIT];
+/* 전역 변수 */
 static char *heap_listp;
 
+/* 함수 선언 */
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static void *find_fit(size_t asize);
 static void place(void *bp, size_t asize);
-static int find_list_index(size_t size);
 static void add_free_block(void *bp);
 static void splice_free_block(void *bp);
 
-/* 초기화 함수 */
-int mm_init(void) {
-    for (int i = 0; i < LISTLIMIT; i++)
-        segregated_free_lists[i] = NULL;
-
-    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
+/* 초기화 */
+int mm_init(void)
+{
+    if ((heap_listp = mem_sbrk(8 * WSIZE)) == (void *)-1)
         return -1;
-
     PUT(heap_listp, 0);
-    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1));
-    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1));
-    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));
-    heap_listp += (2 * WSIZE);
+    PUT(heap_listp + (1 * WSIZE), PACK(2 * WSIZE, 1));
+    PUT(heap_listp + (2 * WSIZE), PACK(2 * WSIZE, 1));
+    PUT(heap_listp + (3 * WSIZE), PACK(4 * WSIZE, 0));
+    PUT(heap_listp + (4 * WSIZE), 0);
+    PUT(heap_listp + (5 * WSIZE), 0);
+    PUT(heap_listp + (6 * WSIZE), PACK(4 * WSIZE, 0));
+    PUT(heap_listp + (7 * WSIZE), PACK(0, 1));
+    heap_listp += (4 * WSIZE);
 
     if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
-
     return 0;
 }
 
-/* 크기에 따라 리스트 인덱스 찾기 */
-static int find_list_index(size_t size) {
-    int idx = 0;
-    size_t temp = size;
-
-    while (temp > 1 && idx < LISTLIMIT - 1) {
-        temp >>= 1;
-        idx++;
-    }
-    return idx;
-}
-
-/* 가용 블록 추가 */
-static void add_free_block(void *bp) {
-    int idx = find_list_index(GET_SIZE(HDRP(bp)));
-    void *head = segregated_free_lists[idx];
-
-    if (head != NULL)
-        GET_PRED(head) = bp;
-    GET_SUCC(bp) = head;
-    GET_PRED(bp) = NULL;
-    segregated_free_lists[idx] = bp;
-}
-
-/* 가용 블록 제거 */
-static void splice_free_block(void *bp) {
-    int idx = find_list_index(GET_SIZE(HDRP(bp)));
-
-    if (GET_PRED(bp))
-        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp);
-    else
-        segregated_free_lists[idx] = GET_SUCC(bp);
-
-    if (GET_SUCC(bp))
-        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp);
-}
-
-/* 힙 확장 */
-static void *extend_heap(size_t words) {
+/* extend_heap - 힙 확장 */
+static void *extend_heap(size_t words)
+{
     char *bp;
-    size_t size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+    size_t size = (words % 2) ? (words+1) * WSIZE : words * WSIZE;
 
     if ((long)(bp = mem_sbrk(size)) == -1)
         return NULL;
@@ -119,8 +80,31 @@ static void *extend_heap(size_t words) {
     return coalesce(bp);
 }
 
-/* 가용 블록 병합 */
-static void *coalesce(void *bp) {
+/* add_free_block - LIFO 방식으로 free list 앞에 추가 */
+static void add_free_block(void *bp)
+{
+    GET_SUCC(bp) = heap_listp;
+    if (heap_listp != NULL)
+        GET_PRED(heap_listp) = bp;
+    GET_PRED(bp) = NULL;
+    heap_listp = bp;
+}
+
+/* splice_free_block - free list에서 블록 제거 */
+static void splice_free_block(void *bp)
+{
+    if (GET_PRED(bp))
+        GET_SUCC(GET_PRED(bp)) = GET_SUCC(bp);
+    else
+        heap_listp = GET_SUCC(bp);
+
+    if (GET_SUCC(bp))
+        GET_PRED(GET_SUCC(bp)) = GET_PRED(bp);
+}
+
+/* coalesce - 인접 가용 블록 병합 */
+static void *coalesce(void *bp)
+{
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp)));
     size_t size = GET_SIZE(HDRP(bp));
@@ -154,25 +138,30 @@ static void *coalesce(void *bp) {
     return bp;
 }
 
-/* 퍼스트 핏으로 가용 블록 탐색 */
-static void *find_fit(size_t asize) {
-    for (int i = 0; i < LISTLIMIT; i++) {
-        void *bp = segregated_free_lists[i];
+/* find_fit - Best Fit 방식으로 가용 블록 탐색 */
+static void *find_fit(size_t asize)
+{
+    void *bp;
+    void *best = NULL;
+    size_t best_size = (size_t)(-1);
 
-        while (bp != NULL) {
-            if (GET_SIZE(HDRP(bp)) >= asize)
-                return bp;
-            bp = GET_SUCC(bp);
+    for (bp = heap_listp; bp != NULL; bp = GET_SUCC(bp)) {
+        size_t bsize = GET_SIZE(HDRP(bp));
+        if (!GET_ALLOC(HDRP(bp)) && bsize >= asize) {
+            if (bsize < best_size) {
+                best = bp;
+                best_size = bsize;
+            }
         }
     }
-    return NULL;
+    return best;
 }
 
-/* 요청 블록 배치 및 분할 */
-static void place(void *bp, size_t asize) {
-    splice_free_block(bp);
-
+/* place - 블록 배치 및 분할 */
+static void place(void *bp, size_t asize)
+{
     size_t csize = GET_SIZE(HDRP(bp));
+    splice_free_block(bp);
 
     if ((csize - asize) >= (2 * DSIZE)) {
         PUT(HDRP(bp), PACK(asize, 1));
@@ -188,8 +177,9 @@ static void place(void *bp, size_t asize) {
     }
 }
 
-/* malloc 함수 */
-void *mm_malloc(size_t size) {
+/* mm_malloc - 메모리 할당 */
+void *mm_malloc(size_t size)
+{
     size_t asize;
     size_t extendsize;
     char *bp;
@@ -200,7 +190,7 @@ void *mm_malloc(size_t size) {
     if (size <= DSIZE)
         asize = 2 * DSIZE;
     else
-        asize = DSIZE * ((size + DSIZE + DSIZE - 1) / DSIZE);
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE-1)) / DSIZE);
 
     if ((bp = find_fit(asize)) != NULL) {
         place(bp, asize);
@@ -214,8 +204,9 @@ void *mm_malloc(size_t size) {
     return bp;
 }
 
-/* free 함수 */
-void mm_free(void *bp) {
+/* mm_free - 메모리 해제 */
+void mm_free(void *bp)
+{
     size_t size = GET_SIZE(HDRP(bp));
 
     PUT(HDRP(bp), PACK(size, 0));
@@ -223,10 +214,15 @@ void mm_free(void *bp) {
     coalesce(bp);
 }
 
-/* realloc 함수 */
-void *mm_realloc(void *ptr, size_t size) {
-    if (ptr == NULL) return mm_malloc(size);
-    if (size == 0) { mm_free(ptr); return NULL; }
+/* mm_realloc - 메모리 재할당 */
+void *mm_realloc(void *ptr, size_t size)
+{
+    if (ptr == NULL)
+        return mm_malloc(size);
+    if (size == 0) {
+        mm_free(ptr);
+        return NULL;
+    }
 
     void *newptr = mm_malloc(size);
     if (newptr == NULL)
